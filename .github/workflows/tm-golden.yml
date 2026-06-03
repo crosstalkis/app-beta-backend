@@ -1,0 +1,27 @@
+name: tm-golden
+
+# T-6(a) POSITIVE — the golden host is reachable ONLY through the pinned
+# reusable. This caller invokes conjur-fetch-v4.yml@v4, so the job's OIDC
+# token carries job_workflow_ref = .../conjur-fetch-v4.yml@refs/tags/v4,
+# matching the ops-prod-golden host's pin -> 200 + secret MATCH.
+#
+# Compare with tm-ops.yml job `t6b-golden-from-direct`, which tries the same
+# golden host from a direct workflow and gets 401 (job_workflow_ref mismatch).
+#
+# Requires: shared-workflows tagged @v4. Trigger: workflow_dispatch.
+
+on:
+  workflow_dispatch:
+
+permissions:
+  id-token: write
+  contents: read
+
+jobs:
+  golden:
+    uses: crosstalkis/shared-workflows/.github/workflows/conjur-fetch-v4.yml@v4
+    with:
+      host-id: sas-topo/sas-beta/ops-prod-golden
+      secret-id: sas-topo/sas-beta/ops-prod/secret
+      expect-prefix: sas-beta-ops-prod-secret-
+      environment: prod

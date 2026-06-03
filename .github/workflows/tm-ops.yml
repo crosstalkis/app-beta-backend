@@ -1,0 +1,84 @@
+name: tm-ops
+
+# Threat-model harness — OPS repo (sas-beta, repo_type=ops).
+# Positives prove the topology works; negatives prove the segregation holds.
+# Each negative isolates ONE failing annotation so the 401 is attributable.
+#
+# Requires: scripts 10 (sas_id) + 13 (repo_type) applied; script 12 (v4
+# Conjur policy) loaded; shared-workflows tagged @v4.
+#
+# Trigger: workflow_dispatch. Lab diagnostic only.
+
+on:
+  workflow_dispatch:
+
+permissions:
+  id-token: write
+  contents: read
+
+jobs:
+  # ---- POSITIVE: ops-dev run reads ops-dev safe ----
+  pos-ops-dev:
+    runs-on: lab-runners
+    environment: dev
+    steps:
+      - uses: crosstalkis/shared-workflows/.github/actions/tm-conjur-attempt@v4
+        with:
+          host-id: sas-topo/sas-beta/ops-dev
+          expect-code: '200'
+          secret-id: sas-topo/sas-beta/ops-dev/secret
+          expect-prefix: sas-beta-ops-dev-secret-
+          label: pos-ops-dev
+
+  # ---- POSITIVE: ops-prod run reads ops-prod safe ----
+  pos-ops-prod:
+    runs-on: lab-runners
+    environment: prod
+    steps:
+      - uses: crosstalkis/shared-workflows/.github/actions/tm-conjur-attempt@v4
+        with:
+          host-id: sas-topo/sas-beta/ops-prod
+          expect-code: '200'
+          secret-id: sas-topo/sas-beta/ops-prod/secret
+          expect-prefix: sas-beta-ops-prod-secret-
+          label: pos-ops-prod
+
+  # ---- T-1: DEV-context OPS run cannot reach PROD OPS safe ----
+  # sas_id✓ repo_type✓ environment=dev ✗ (ops-prod pins environment=prod) -> 401
+  # The 401 is attributable to the environment claim. NOTE (design §4): this
+  # stops an ACCIDENTAL cross-env reach; a malicious author who writes
+  # `environment: prod` below would pass — the real gate is GitHub environment
+  # protection rules on the prod environment.
+  t1-crossenv-ops-prod:
+    runs-on: lab-runners
+    environment: dev
+    steps:
+      - uses: crosstalkis/shared-workflows/.github/actions/tm-conjur-attempt@v4
+        with:
+          host-id: sas-topo/sas-beta/ops-prod
+          expect-code: '401'
+          label: t1-crossenv
+
+  # ---- T-7: no environment declared -> environment claim absent -> fail closed ----
+  # Proves the env-pinned host rejects a token that carries no environment claim.
+  t7-no-environment:
+    runs-on: lab-runners
+    steps:
+      - uses: crosstalkis/shared-workflows/.github/actions/tm-conjur-attempt@v4
+        with:
+          host-id: sas-topo/sas-beta/ops-prod
+          expect-code: '401'
+          label: t7-no-environment
+
+  # ---- T-6(b): direct workflow cannot use the golden host ----
+  # sas_id✓ repo_type✓ environment=prod✓ job_workflow_ref ✗
+  # (golden host pins conjur-fetch-v4.yml@v4; this run's ref is tm-ops.yml) -> 401
+  t6b-golden-from-direct:
+    runs-on: lab-runners
+    environment: prod
+    steps:
+      - uses: crosstalkis/shared-workflows/.github/actions/tm-conjur-attempt@v4
+        with:
+          host-id: sas-topo/sas-beta/ops-prod-golden
+          expect-code: '401'
+          label: t6b-golden-from-direct

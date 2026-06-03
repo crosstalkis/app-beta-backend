@@ -1,0 +1,77 @@
+name: inspect-jwt
+
+# Diagnostic — mints a GHA OIDC JWT and dumps its decoded payload. Does NOT
+# exchange at Conjur or fetch secrets. Use it to confirm the v4 harness claims
+# are present BEFORE running the tm-* tests:
+#   repo_property_sas_id    = sas-beta
+#   repo_property_repo_type = ops
+# (run with the default audience conjur/lab/topo).
+#
+# Lab-only diagnostic. Production callers must never dump the JWT payload.
+# Trigger: workflow_dispatch.
+
+on:
+  workflow_dispatch:
+    inputs:
+      audience:
+        description: 'aud claim requested from GHA OIDC token endpoint'
+        required: false
+        default: 'conjur/lab/topo'
+        type: string
+
+permissions:
+  id-token: write
+  contents: read
+
+jobs:
+  inspect:
+    runs-on: lab-runners
+    steps:
+      - name: Mint OIDC JWT and decode payload
+        env:
+          AUDIENCE: ${{ inputs.audience }}
+        run: |
+          set -euo pipefail
+
+          echo "::group::1. Mint GHA OIDC JWT (audience=${AUDIENCE})"
+          : "${ACTIONS_ID_TOKEN_REQUEST_TOKEN:?id-token: write missing}"
+          : "${ACTIONS_ID_TOKEN_REQUEST_URL:?runner did not set request URL}"
+          jwt=$(curl -sSf \
+            -H "Authorization: Bearer ${ACTIONS_ID_TOKEN_REQUEST_TOKEN}" \
+            "${ACTIONS_ID_TOKEN_REQUEST_URL}&audience=${AUDIENCE}" | jq -r '.value')
+          if [[ -z "${jwt}" || "${jwt}" == "null" ]]; then
+            echo "ERROR: OIDC endpoint returned empty/null JWT" >&2; exit 1
+          fi
+          echo "::add-mask::${jwt}"
+          echo "JWT minted (length=${#jwt})"
+          echo "::endgroup::"
+
+          payload_b64="${jwt#*.}"; payload_b64="${payload_b64%%.*}"
+          b64="${payload_b64//-/+}"; b64="${b64//_/\/}"
+          pad=$(( (4 - ${#b64} % 4) % 4 ))
+          b64="${b64}$(printf '%*s' "${pad}" '' | tr ' ' '=')"
+          payload_json=$(printf '%s' "${b64}" | base64 -d)
+
+          echo "::group::2. All claim keys"
+          jq -r 'keys_unsorted | sort | .[]' <<< "${payload_json}"
+          echo "::endgroup::"
+
+          echo "::group::3. repo_property_* claims (the SAS + repo_type axes)"
+          rp_count=$(jq -r '[keys[] | select(startswith("repo_property_"))] | length' <<< "${payload_json}")
+          echo "repo_property_* claim count: ${rp_count}"
+          if [[ "${rp_count}" -gt 0 ]]; then
+            jq -r 'with_entries(select(.key | startswith("repo_property_"))) | to_entries | .[] | "  \(.key) = \(.value)"' <<< "${payload_json}"
+          else
+            echo "  (none — run scripts 10 + 13, and confirm OIDC inclusion lists BOTH sas_id and repo_type)"
+          fi
+          echo "::endgroup::"
+
+          echo "::group::4. environment claim (the weak, caller-asserted axis)"
+          echo "environment = $(jq -r '.environment // "<absent — no environment: declared in this job>"' <<< "${payload_json}")"
+          echo "::endgroup::"
+
+          echo "::group::5. Issuer / audience / lifetime / job_workflow_ref"
+          jq -r '"iss = \(.iss)\naud = \(.aud)\niat = \(.iat)\nexp = \(.exp)\njob_workflow_ref = \(.job_workflow_ref)"' <<< "${payload_json}"
+          echo "::endgroup::"
+
+          jq -r '"INSPECT repository=\(.repository) sas_id=\(.repo_property_sas_id // "absent") repo_type=\(.repo_property_repo_type // "absent") environment=\(.environment // "absent")"' <<< "${payload_json}"
